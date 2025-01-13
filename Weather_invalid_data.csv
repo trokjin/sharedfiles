@@ -1,0 +1,8 @@
+Date,Temperature,WindSpeed,Description
+2019-07-30,32 F,6 mph,Sunny
+2019-07-31,28,9 mph,Rain
+2019-08-04,-99,7.0,Not Available
+2019-08-05,32,-99,Sunny
+2019-08-06,-88,-99,Not Available
+2019-08-07,27 C,8.0,Rain
+2019-08-08,29,,Rain
