@@ -1,15 +1,17 @@
         private async Task ConnectAndReadFromTcpAsync(string address, int port, string tag, CancellationToken token)
         {
+            const int MaxRetryDelay = 10000;
             int retryDelay = 1000;
+
             while (!token.IsCancellationRequested)
             {
                 using var client = new TcpClient();
                 try
                 {
-                    var connectCancellation = CancellationTokenSource.CreateLinkedTokenSource(token);
-                    connectCancellation.CancelAfter(TimeSpan.FromSeconds(5));
+                    using var connectCts = CancellationTokenSource.CreateLinkedTokenSource(token);
+                    connectCts.CancelAfter(TimeSpan.FromSeconds(5));
                     logger.LogInformation("Connecting to {address}:{port}", address, port);
-                    await client.ConnectAsync(address, port, connectCancellation.Token);
+                    await client.ConnectAsync(address, port, connectCts.Token);
                     logger.LogInformation("Connected to {address}:{port}", address, port);
 
                     using var stream = client.GetStream();
@@ -21,14 +23,14 @@
 
                     while (!token.IsCancellationRequested)
                     {
-                        var readCancellation = CancellationTokenSource.CreateLinkedTokenSource(token);
+                        using var readCts = CancellationTokenSource.CreateLinkedTokenSource(token);
                         try
                         {
-                            var bytesReadTask = stream.ReadAsync(buffer, 0, buffer.Length, readCancellation.Token);
+                            var bytesReadTask = stream.ReadAsync(buffer, 0, buffer.Length, readCts.Token);
 
-                            while(!bytesReadTask.IsCompleted && !token.IsCancellationRequested)
+                            while (!bytesReadTask.IsCompleted && !token.IsCancellationRequested)
                             {
-                                Task completedTask = await Task.WhenAny(bytesReadTask, Task.Delay(heartbeatInterval, readCancellation.Token));
+                                Task completedTask = await Task.WhenAny(bytesReadTask, Task.Delay(heartbeatInterval, readCts.Token));
                                 if (completedTask == bytesReadTask)
                                 {
                                     var bytesRead = await bytesReadTask;
@@ -44,20 +46,37 @@
                                 else
                                 {
 
-                                    var heartbeatMessage = Encoding.UTF8.GetBytes("ping\n");
-
-                                    await stream.WriteAsync(heartbeatMessage, readCancellation.Token);
-                                    logger.LogInformation("Sent heartbeat to {address}:{port}", address, port);
+                                    bool isDisconnected = client.Client.Poll(1000, SelectMode.SelectRead) && (client.Client.Available == 0);
+                                    if (isDisconnected)
+                                    {
+                                        throw new Exception("Poll detected Connection closed by remote host");
+                                    }
+                                    else
+                                    {
+                                        logger.LogInformation("Poll detected Connection closed by {address}:{port}", address, port);
+                                    }
                                 }
                             }
                         }
                         catch (IOException ex)
                         {
-
+                            logger.LogWarning(ex, "网络异常");
+                            break;
                         }
                         catch (SocketException ex)
                         {
-
+                            logger.LogWarning(ex, "网络异常");
+                            break;
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            logger.LogInformation("取消操作");
+                            break;
+                        }
+                        catch (Exception ex)
+                        {
+                            logger.LogError(ex, "异常");
+                            break;
                         }
                     }
                 }
@@ -69,7 +88,7 @@
                     client?.Close();
                 }
 
-                await Task.Delay(retryDelay, token);
+                await Task.Delay(Math.Max(retryDelay,MaxRetryDelay), token);
                 retryDelay *= 2;
             }
         }
