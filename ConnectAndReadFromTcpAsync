@@ -1,0 +1,75 @@
+        private async Task ConnectAndReadFromTcpAsync(string address, int port, string tag, CancellationToken token)
+        {
+            int retryDelay = 1000;
+            while (!token.IsCancellationRequested)
+            {
+                using var client = new TcpClient();
+                try
+                {
+                    var connectCancellation = CancellationTokenSource.CreateLinkedTokenSource(token);
+                    connectCancellation.CancelAfter(TimeSpan.FromSeconds(5));
+                    logger.LogInformation("Connecting to {address}:{port}", address, port);
+                    await client.ConnectAsync(address, port, connectCancellation.Token);
+                    logger.LogInformation("Connected to {address}:{port}", address, port);
+
+                    using var stream = client.GetStream();
+                    byte[] buffer = new byte[1024];
+                    retryDelay = 1000;
+
+                    var heartbeatInterval = TimeSpan.FromSeconds(5);
+                    var lastHeartbeat = DateTimeOffset.UtcNow;
+
+                    while (!token.IsCancellationRequested)
+                    {
+                        var readCancellation = CancellationTokenSource.CreateLinkedTokenSource(token);
+                        try
+                        {
+                            var bytesReadTask = stream.ReadAsync(buffer, 0, buffer.Length, readCancellation.Token);
+
+                            while(!bytesReadTask.IsCompleted && !token.IsCancellationRequested)
+                            {
+                                Task completedTask = await Task.WhenAny(bytesReadTask, Task.Delay(heartbeatInterval, readCancellation.Token));
+                                if (completedTask == bytesReadTask)
+                                {
+                                    var bytesRead = await bytesReadTask;
+                                    if (bytesRead == 0)
+                                    {
+                                        logger.LogInformation("Connection closed by {address}:{port}", address, port);
+                                        throw new Exception("Connection closed by remote host");
+                                    }
+                                    var message = Encoding.UTF8.GetString(buffer, 0, bytesRead);
+                                    logger.LogInformation("Received message from {address}:{port}: {message}", address, port, message);
+                                    break;
+                                }
+                                else
+                                {
+
+                                    var heartbeatMessage = Encoding.UTF8.GetBytes("ping\n");
+
+                                    await stream.WriteAsync(heartbeatMessage, readCancellation.Token);
+                                    logger.LogInformation("Sent heartbeat to {address}:{port}", address, port);
+                                }
+                            }
+                        }
+                        catch (IOException ex)
+                        {
+
+                        }
+                        catch (SocketException ex)
+                        {
+
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    logger.LogError(ex, "Error connecting to {address}:{port}", address, port);
+                }
+                finally { 
+                    client?.Close();
+                }
+
+                await Task.Delay(retryDelay, token);
+                retryDelay *= 2;
+            }
+        }
